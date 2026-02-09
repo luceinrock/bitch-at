@@ -41,15 +41,19 @@ class NostrTransport(
     private var isSendingReadAcks = false
     private val transportScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     
+    /** BLE relay proxy client for sending geohash DMs when no Nostr relays are connected */
+    var bleProxyClient: com.bitchat.android.mesh.relay.NostrRelayProxyClient? = null
+
     // MARK: - Transport Interface Methods
-    
+
     val myPeerID: String get() = senderPeerID
     
     fun sendPrivateMessage(
         content: String,
         to: String,
         recipientNickname: String,
-        messageID: String
+        messageID: String,
+        viewOnce: Boolean = false
     ) {
         transportScope.launch {
             try {
@@ -98,7 +102,8 @@ class NostrTransport(
                     content = content,
                     messageID = messageID,
                     recipientPeerID = recipientPeerIDForEmbed,
-                    senderPeerID = senderPeerID
+                    senderPeerID = senderPeerID,
+                    viewOnce = viewOnce
                 )
                 
                 
@@ -368,15 +373,19 @@ class NostrTransport(
                 // Register pending gift wrap for deduplication and send all
                 giftWraps.forEach { event ->
                     NostrRelayManager.registerPendingGiftWrap(event.id)
-                    NostrRelayManager.getInstance(context).sendEvent(event)
+                    if (NostrRelayManager.shared.isConnected.value) {
+                        NostrRelayManager.getInstance(context).sendEvent(event)
+                    } else {
+                        bleProxyClient?.publishEvent(event)
+                    }
                 }
-                
+
             } catch (e: Exception) {
                 Log.e(TAG, "Failed to send geohash delivery ack: ${e.message}")
             }
         }
     }
-    
+
     fun sendReadReceiptGeohash(
         messageID: String,
         toRecipientHex: String,
@@ -403,9 +412,13 @@ class NostrTransport(
                 // Register pending gift wrap for deduplication and send all
                 giftWraps.forEach { event ->
                     NostrRelayManager.registerPendingGiftWrap(event.id)
-                    NostrRelayManager.getInstance(context).sendEvent(event)
+                    if (NostrRelayManager.shared.isConnected.value) {
+                        NostrRelayManager.getInstance(context).sendEvent(event)
+                    } else {
+                        bleProxyClient?.publishEvent(event)
+                    }
                 }
-                
+
             } catch (e: Exception) {
                 Log.e(TAG, "Failed to send geohash read receipt: ${e.message}")
             }
@@ -418,7 +431,8 @@ class NostrTransport(
         content: String,
         toRecipientHex: String,
         messageID: String,
-        sourceGeohash: String? = null
+        sourceGeohash: String? = null,
+        viewOnce: Boolean = false
     ) {
         // Use provided geohash or derive from current location
         val geohash = sourceGeohash ?: run {
@@ -452,7 +466,8 @@ class NostrTransport(
                 val embedded = NostrEmbeddedBitChat.encodePMForNostrNoRecipient(
                     content = content,
                     messageID = messageID,
-                    senderPeerID = senderPeerID
+                    senderPeerID = senderPeerID,
+                    viewOnce = viewOnce
                 ) ?: run {
                     Log.e(TAG, "NostrTransport: failed to embed geohash PM packet")
                     return@launch
@@ -467,7 +482,12 @@ class NostrTransport(
                 giftWraps.forEach { event ->
                     Log.d(TAG, "NostrTransport: sending geohash PM giftWrap id=${event.id.take(16)}...")
                     NostrRelayManager.registerPendingGiftWrap(event.id)
-                    NostrRelayManager.getInstance(context).sendEvent(event)
+                    if (NostrRelayManager.shared.isConnected.value) {
+                        NostrRelayManager.getInstance(context).sendEvent(event)
+                    } else {
+                        Log.d(TAG, "No Nostr relays connected, using BLE proxy for geohash PM")
+                        bleProxyClient?.publishEvent(event)
+                    }
                 }
             } catch (e: Exception) {
                 Log.e(TAG, "Failed to send geohash private message: ${e.message}")

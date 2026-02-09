@@ -172,6 +172,26 @@ fun MeshPeerListSheet(
                             }
                         }
                     }
+
+                    // Favorites section — always visible regardless of channel mode
+                    // In mesh mode, PeopleSection already shows inline offline favorites,
+                    // but in location mode they were previously invisible.
+                    if (selectedLocationChannel is ChannelID.Location) {
+                        item(key = "favorites_section") {
+                            OfflineFavoritesSection(
+                                viewModel = viewModel,
+                                colorScheme = colorScheme,
+                                connectedPeers = connectedPeers,
+                                peerNicknames = peerNicknames,
+                                nickname = nickname,
+                                selectedPrivatePeer = selectedPrivatePeer,
+                                onPrivateChatStart = { peerID ->
+                                    viewModel.showPrivateChatSheet(peerID)
+                                    onDismiss()
+                                }
+                            )
+                        }
+                    }
                 }
 
                 // TopBar (animated)
@@ -434,6 +454,23 @@ fun PeopleSection(
         }
 
         // Append offline favorites we actively favorite (and not currently connected)
+        val visibleOfflineFavorites = offlineFavorites.filter { fav ->
+            val favPeerID = fav.peerNoisePublicKey.joinToString("") { b -> "%02x".format(b) }
+            !noiseHexByPeerID.values.any { it.equals(favPeerID, ignoreCase = true) }
+        }
+        if (visibleOfflineFavorites.isNotEmpty()) {
+            Spacer(modifier = Modifier.height(12.dp))
+            Text(
+                text = stringResource(id = R.string.favorites_header).uppercase(),
+                style = MaterialTheme.typography.labelLarge,
+                color = colorScheme.onSurface.copy(alpha = 0.7f),
+                fontWeight = FontWeight.Bold,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 24.dp)
+                    .padding(top = 8.dp, bottom = 4.dp)
+            )
+        }
         offlineFavorites.forEach { fav ->
             val favPeerID = fav.peerNoisePublicKey.joinToString("") { b -> "%02x".format(b) }
             // If any connected peer maps to this noise key, skip showing the offline entry
@@ -687,6 +724,105 @@ private fun PeerItem(
 }
 
 /**
+ * Shows offline favorites when in location/geohash channel mode,
+ * where PeopleSection is replaced by GeohashPeopleList (which has no favorites support).
+ */
+@Composable
+private fun OfflineFavoritesSection(
+    viewModel: ChatViewModel,
+    colorScheme: ColorScheme,
+    connectedPeers: List<String>,
+    peerNicknames: Map<String, String>,
+    nickname: String,
+    selectedPrivatePeer: String?,
+    onPrivateChatStart: (String) -> Unit
+) {
+    val hasUnreadPrivateMessages by viewModel.unreadPrivateMessages.collectAsStateWithLifecycle()
+    val privateChats by viewModel.privateChats.collectAsStateWithLifecycle()
+    val verifiedFingerprints by viewModel.verifiedFingerprints.collectAsStateWithLifecycle()
+
+    // Build mapping of connected peerID -> noise key hex to exclude connected favorites
+    val noiseHexByPeerID: Map<String, String> = connectedPeers.associateWith { pid ->
+        try {
+            viewModel.meshService.getPeerInfo(pid)?.noisePublicKey?.joinToString("") { b -> "%02x".format(b) }
+        } catch (_: Exception) { null }
+    }.filterValues { it != null }.mapValues { it.value!! }
+
+    val offlineFavorites = com.bitchat.android.favorites.FavoritesPersistenceService.shared.getOurFavorites()
+    val visibleOfflineFavorites = offlineFavorites.filter { fav ->
+        val favPeerID = fav.peerNoisePublicKey.joinToString("") { b -> "%02x".format(b) }
+        !noiseHexByPeerID.values.any { it.equals(favPeerID, ignoreCase = true) }
+    }
+
+    if (visibleOfflineFavorites.isEmpty()) return
+
+    Column {
+        Spacer(modifier = Modifier.height(12.dp))
+        Text(
+            text = stringResource(id = R.string.favorites_header).uppercase(),
+            style = MaterialTheme.typography.labelLarge,
+            color = colorScheme.onSurface.copy(alpha = 0.7f),
+            fontWeight = FontWeight.Bold,
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 24.dp)
+                .padding(top = 8.dp, bottom = 4.dp)
+        )
+
+        visibleOfflineFavorites.forEach { fav ->
+            val favPeerID = fav.peerNoisePublicKey.joinToString("") { b -> "%02x".format(b) }
+
+            // Resolve potential Nostr conversation key for unread detection
+            val nostrConvKey: String? = try {
+                val npubOrHex = com.bitchat.android.favorites.FavoritesPersistenceService.shared.findNostrPubkey(fav.peerNoisePublicKey)
+                if (npubOrHex != null) {
+                    val hex = if (npubOrHex.startsWith("npub")) {
+                        val (hrp, data) = com.bitchat.android.nostr.Bech32.decode(npubOrHex)
+                        if (hrp == "npub") data.joinToString("") { "%02x".format(it) } else null
+                    } else {
+                        npubOrHex.lowercase()
+                    }
+                    hex?.let { "nostr_${it.take(16)}" }
+                } else null
+            } catch (_: Exception) { null }
+
+            val hasUnread = hasUnreadPrivateMessages.contains(favPeerID) || (nostrConvKey != null && hasUnreadPrivateMessages.contains(nostrConvKey))
+
+            val mappedConnectedPeerID = noiseHexByPeerID.entries.firstOrNull { it.value.equals(favPeerID, ignoreCase = true) }?.key
+            val dn = peerNicknames[favPeerID] ?: fav.peerNickname
+
+            val isVerified = viewModel.isNoisePublicKeyVerified(fav.peerNoisePublicKey, verifiedFingerprints)
+
+            val unreadCount = (
+                privateChats[favPeerID]?.count { msg -> msg.sender != nickname && hasUnreadPrivateMessages.contains(favPeerID) } ?: 0
+            ) + (
+                if (nostrConvKey != null) privateChats[nostrConvKey]?.count { msg -> msg.sender != nickname && hasUnreadPrivateMessages.contains(nostrConvKey) } ?: 0 else 0
+            )
+
+            PeerItem(
+                peerID = favPeerID,
+                displayName = dn,
+                isDirect = false,
+                isSelected = (mappedConnectedPeerID ?: favPeerID) == selectedPrivatePeer,
+                isFavorite = true,
+                isVerified = isVerified,
+                hasUnreadDM = hasUnread,
+                colorScheme = colorScheme,
+                viewModel = viewModel,
+                onItemClick = { onPrivateChatStart(mappedConnectedPeerID ?: favPeerID) },
+                onToggleFavorite = {
+                    Log.d("MeshPeerListSheet", "Toggle favorite (offline/geohash): peerID=$favPeerID")
+                    viewModel.toggleFavorite(favPeerID)
+                },
+                unreadCount = if (unreadCount > 0) unreadCount else if (hasUnread) 1 else 0,
+                showNostrGlobe = (fav.isMutual && fav.peerNostrPublicKey != null),
+                showHashSuffix = false
+            )
+        }
+    }
+}
+
+/**
  * Reusable unread badge component for both channels and private messages
  */
 @Composable
@@ -763,6 +899,7 @@ fun PrivateChatSheet(
     val peerFingerprints by viewModel.peerFingerprints.collectAsStateWithLifecycle()
 
     val verifiedFingerprints by viewModel.verifiedFingerprints.collectAsStateWithLifecycle()
+    val viewOnceEnabled by viewModel.viewOnceMode.collectAsStateWithLifecycle()
 
     // Start private chat when screen opens
     LaunchedEffect(peerID) {
@@ -811,9 +948,15 @@ fun PrivateChatSheet(
         skipPartiallyExpanded = true
     )
 
+    // Expire all view-once messages on any dismiss path
+    val dismissWithExpire = {
+        viewModel.expireAllViewOnceForPeer(peerID)
+        onDismiss()
+    }
+
     if (isPresented) {
         BitchatBottomSheet(
-            onDismissRequest = onDismiss,
+            onDismissRequest = dismissWithExpire,
             sheetState = sheetState,
         ) {
             Box(modifier = Modifier.fillMaxSize()) {
@@ -838,7 +981,8 @@ fun PrivateChatSheet(
                         onNicknameClick = { /* handle mention */ },
                         onMessageLongPress = { /* handle long press */ },
                         onCancelTransfer = { msg -> viewModel.cancelMediaSend(msg.id) },
-                        onImageClick = { _, _, _ -> /* handle image click */ }
+                        onImageClick = { _, _, _ -> /* handle image click */ },
+                        onViewOnceReveal = { msg -> viewModel.revealViewOnceMessage(msg.id, peerID) }
                     )
 
                     HorizontalDivider(color = colorScheme.outline.copy(alpha = 0.3f))
@@ -884,17 +1028,19 @@ fun PrivateChatSheet(
                         currentChannel = null,
                         nickname = nickname,
                         colorScheme = colorScheme,
-                        showMediaButtons = true
+                        showMediaButtons = true,
+                        viewOnceEnabled = viewOnceEnabled,
+                        onToggleViewOnce = { viewModel.toggleViewOnceMode() }
                     )
                 }
 
                 // TopBar (fixed at top, iOS-style)
                 BitchatSheetCenterTopBar(
-                    onClose = onDismiss,
+                    onClose = dismissWithExpire,
                     modifier = Modifier.align(Alignment.TopCenter),
                     navigationIcon = {
                         IconButton(
-                            onClick = onDismiss,
+                            onClick = dismissWithExpire,
                             modifier = Modifier
                                 .align(Alignment.CenterStart)
                                 .padding(start = 16.dp)

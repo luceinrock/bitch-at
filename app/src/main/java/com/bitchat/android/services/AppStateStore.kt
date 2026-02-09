@@ -85,6 +85,52 @@ object AppStateStore {
         }
     }
 
+    /**
+     * Update a private message in-place by ID using a transform function.
+     * Used for view-once reveal/expire.
+     */
+    fun updatePrivateMessage(messageID: String, transform: (BitchatMessage) -> BitchatMessage) {
+        synchronized(this) {
+            val map = _privateMessages.value.toMutableMap()
+            var changed = false
+            map.keys.toList().forEach { peer ->
+                val list = map[peer]?.toMutableList() ?: mutableListOf()
+                val idx = list.indexOfFirst { it.id == messageID }
+                if (idx >= 0) {
+                    list[idx] = transform(list[idx])
+                    map[peer] = list
+                    changed = true
+                }
+            }
+            if (changed) {
+                _privateMessages.value = map
+            }
+        }
+    }
+
+    /**
+     * Update all private messages for a peer using a transform function.
+     * Used for expiring all view-once messages when leaving chat.
+     */
+    fun updatePrivateMessagesForPeer(peerID: String, transform: (BitchatMessage) -> BitchatMessage) {
+        synchronized(this) {
+            val map = _privateMessages.value.toMutableMap()
+            val list = map[peerID]?.toMutableList() ?: return
+            var changed = false
+            for (i in list.indices) {
+                val updated = transform(list[i])
+                if (updated !== list[i]) {
+                    list[i] = updated
+                    changed = true
+                }
+            }
+            if (changed) {
+                map[peerID] = list
+                _privateMessages.value = map
+            }
+        }
+    }
+
     fun addChannelMessage(channel: String, msg: BitchatMessage) {
         synchronized(this) {
             if (seenMessageIds.contains(msg.id)) return

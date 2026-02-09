@@ -100,7 +100,9 @@ class MessageHandler(private val myPeerID: String, private val appContext: andro
                             isPrivate = true,
                             recipientNickname = delegate?.getMyNickname(),
                             senderPeerID = peerID,
-                            mentions = null // TODO: Parse mentions if needed
+                            mentions = null, // TODO: Parse mentions if needed
+                            hopCount = hopCountFromPacket(packet),
+                            viewOnce = privateMessage.viewOnce
                         )
                         
                         // Notify delegate
@@ -127,7 +129,8 @@ class MessageHandler(private val myPeerID: String, private val appContext: andro
                             isRelay = false,
                             isPrivate = true,
                             recipientNickname = delegate?.getMyNickname(),
-                            senderPeerID = peerID
+                            senderPeerID = peerID,
+                            hopCount = hopCountFromPacket(packet)
                         )
 
                         Log.d(TAG, "📄 Saved encrypted incoming file to $savedPath (msgId=$uniqueMsgId)")
@@ -405,7 +408,8 @@ class MessageHandler(private val myPeerID: String, private val appContext: andro
                     content = savedPath,
                     type = com.bitchat.android.features.file.FileUtils.messageTypeForMime(file.mimeType),
                     senderPeerID = peerID,
-                    timestamp = Date(packet.timestamp.toLong())
+                    timestamp = Date(packet.timestamp.toLong()),
+                    hopCount = hopCountFromPacket(packet)
                 )
                 Log.d(TAG, "📄 Saved incoming file to $savedPath")
                 delegate?.onMessageReceived(message)
@@ -419,7 +423,8 @@ class MessageHandler(private val myPeerID: String, private val appContext: andro
                 sender = delegate?.getPeerNickname(peerID) ?: "unknown",
                 content = String(packet.payload, Charsets.UTF_8),
                 senderPeerID = peerID,
-                timestamp = Date(packet.timestamp.toLong())
+                timestamp = Date(packet.timestamp.toLong()),
+                hopCount = hopCountFromPacket(packet)
             )
             delegate?.onMessageReceived(message)
         } catch (e: Exception) {
@@ -454,7 +459,8 @@ class MessageHandler(private val myPeerID: String, private val appContext: andro
                     senderPeerID = peerID,
                     timestamp = Date(packet.timestamp.toLong()),
                     isPrivate = true,
-                    recipientNickname = delegate?.getMyNickname()
+                    recipientNickname = delegate?.getMyNickname(),
+                    hopCount = hopCountFromPacket(packet)
                 )
                 Log.d(TAG, "📄 Saved incoming file to $savedPath")
                 delegate?.onMessageReceived(message)
@@ -468,7 +474,8 @@ class MessageHandler(private val myPeerID: String, private val appContext: andro
                 sender = delegate?.getPeerNickname(peerID) ?: "unknown",
                 content = String(packet.payload, Charsets.UTF_8),
                 senderPeerID = peerID,
-                timestamp = Date(packet.timestamp.toLong())
+                timestamp = Date(packet.timestamp.toLong()),
+                hopCount = hopCountFromPacket(packet)
             )
             delegate?.onMessageReceived(message)
 
@@ -528,6 +535,13 @@ class MessageHandler(private val myPeerID: String, private val appContext: andro
         }
         
         return result
+    }
+
+    /**
+     * Calculate how many hops a packet has traveled from its TTL value.
+     */
+    private fun hopCountFromPacket(packet: BitchatPacket): Int {
+        return (com.bitchat.android.util.AppConstants.MESSAGE_TTL_HOPS - packet.ttl).toInt()
     }
 
     /**

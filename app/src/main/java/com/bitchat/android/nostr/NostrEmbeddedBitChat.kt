@@ -23,11 +23,12 @@ object NostrEmbeddedBitChat {
         content: String,
         messageID: String,
         recipientPeerID: String,
-        senderPeerID: String
+        senderPeerID: String,
+        viewOnce: Boolean = false
     ): String? {
         try {
             // TLV-encode the private message
-            val pm = PrivateMessagePacket(messageID = messageID, content = content)
+            val pm = PrivateMessagePacket(messageID = messageID, content = content, viewOnce = viewOnce)
             val tlv = pm.encode() ?: return null
             
             // Prefix with NoisePayloadType
@@ -140,10 +141,11 @@ object NostrEmbeddedBitChat {
     fun encodePMForNostrNoRecipient(
         content: String,
         messageID: String,
-        senderPeerID: String
+        senderPeerID: String,
+        viewOnce: Boolean = false
     ): String? {
         try {
-            val pm = PrivateMessagePacket(messageID = messageID, content = content)
+            val pm = PrivateMessagePacket(messageID = messageID, content = content, viewOnce = viewOnce)
             val tlv = pm.encode() ?: return null
             
             val payload = ByteArray(1 + tlv.size)
@@ -199,7 +201,7 @@ object NostrEmbeddedBitChat {
     /**
      * Base64url encode without padding (matches iOS implementation)
      */
-    private fun base64URLEncode(data: ByteArray): String {
+    internal fun base64URLEncode(data: ByteArray): String {
         val b64 = Base64.encodeToString(data, Base64.NO_WRAP)
         return b64
             .replace("+", "-")

@@ -102,7 +102,8 @@ data class NoisePayload(
 @Parcelize
 data class PrivateMessagePacket(
     val messageID: String,
-    val content: String
+    val content: String,
+    val viewOnce: Boolean = false
 ) : Parcelable {
 
     /**
@@ -110,8 +111,9 @@ data class PrivateMessagePacket(
      */
     private enum class TLVType(val value: UByte) {
         MESSAGE_ID(0x00u),
-        CONTENT(0x01u);
-        
+        CONTENT(0x01u),
+        VIEW_ONCE(0x02u);
+
         companion object {
             fun fromValue(value: UByte): TLVType? {
                 return values().find { it.value == value }
@@ -143,7 +145,14 @@ data class PrivateMessagePacket(
         result.add(TLVType.CONTENT.value.toByte())
         result.add(contentData.size.toByte())
         result.addAll(contentData.toList())
-        
+
+        // TLV for viewOnce (only when true - zero wire cost for normal messages)
+        if (viewOnce) {
+            result.add(TLVType.VIEW_ONCE.value.toByte())
+            result.add(0x01.toByte()) // length = 1
+            result.add(0x01.toByte()) // value = true
+        }
+
         return result.toByteArray()
     }
     
@@ -155,24 +164,31 @@ data class PrivateMessagePacket(
             var offset = 0
             var messageID: String? = null
             var content: String? = null
-            
+            var viewOnce = false
+
             while (offset + 2 <= data.size) {
                 // Read TLV type
                 val typeValue = data[offset].toUByte()
-                val type = TLVType.fromValue(typeValue) ?: return null
+                val type = TLVType.fromValue(typeValue)
                 offset += 1
-                
+
                 // Read TLV length
                 val length = data[offset].toUByte().toInt()
                 offset += 1
-                
+
                 // Check bounds
                 if (offset + length > data.size) return null
-                
+
+                // Skip unknown types for forward compatibility
+                if (type == null) {
+                    offset += length
+                    continue
+                }
+
                 // Read TLV value
                 val value = data.copyOfRange(offset, offset + length)
                 offset += length
-                
+
                 when (type) {
                     TLVType.MESSAGE_ID -> {
                         messageID = String(value, Charsets.UTF_8)
@@ -180,11 +196,14 @@ data class PrivateMessagePacket(
                     TLVType.CONTENT -> {
                         content = String(value, Charsets.UTF_8)
                     }
+                    TLVType.VIEW_ONCE -> {
+                        viewOnce = value.isNotEmpty() && value[0] != 0.toByte()
+                    }
                 }
             }
-            
+
             return if (messageID != null && content != null) {
-                PrivateMessagePacket(messageID, content)
+                PrivateMessagePacket(messageID, content, viewOnce)
             } else {
                 null
             }

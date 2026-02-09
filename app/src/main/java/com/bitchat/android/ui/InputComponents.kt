@@ -171,6 +171,8 @@ fun MessageInput(
     currentChannel: String?,
     nickname: String,
     showMediaButtons: Boolean,
+    viewOnceEnabled: Boolean = false,
+    onToggleViewOnce: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val colorScheme = MaterialTheme.colorScheme
@@ -252,7 +254,21 @@ fun MessageInput(
         }
         
         Spacer(modifier = Modifier.width(8.dp)) // Reduced spacing
-        
+
+        // View-once flame toggle (always visible in private chats)
+        if (selectedPrivatePeer != null) {
+            IconButton(
+                onClick = onToggleViewOnce,
+                modifier = Modifier.size(32.dp)
+            ) {
+                Text(
+                    text = "\uD83D\uDD25", // 🔥
+                    fontSize = 18.sp,
+                    color = if (viewOnceEnabled) Color(0xFFFF9500) else colorScheme.onSurface.copy(alpha = 0.3f)
+                )
+            }
+        }
+
         // Voice and image buttons when no text (only visible in Mesh chat)
         if (value.text.isEmpty() && showMediaButtons) {
             // Hold-to-record microphone

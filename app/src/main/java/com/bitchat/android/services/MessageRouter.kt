@@ -38,8 +38,11 @@ class MessageRouter private constructor(
         }
     }
 
-    // Outbox: peerID -> queued (content, nickname, messageID)
-    private val outbox = mutableMapOf<String, MutableList<Triple<String, String, String>>>()
+    // Outbox entry for queued private messages
+    private data class OutboxEntry(val content: String, val nickname: String, val messageID: String, val viewOnce: Boolean = false)
+
+    // Outbox: peerID -> queued entries
+    private val outbox = mutableMapOf<String, MutableList<OutboxEntry>>()
 
     // Listener for favorites changes to flush outbox when npub mapping appears/changes
     private val favoriteListener = object: com.bitchat.android.favorites.FavoritesChangeListener {
@@ -55,7 +58,7 @@ class MessageRouter private constructor(
         }
     }
 
-    fun sendPrivate(content: String, toPeerID: String, recipientNickname: String, messageID: String) {
+    fun sendPrivate(content: String, toPeerID: String, recipientNickname: String, messageID: String, viewOnce: Boolean = false) {
         // First: if this is a geohash DM alias (nostr_<pub16>), route via Nostr using global registry
         if (com.bitchat.android.nostr.GeohashAliasRegistry.contains(toPeerID)) {
             Log.d(TAG, "Routing PM via Nostr (geohash) to alias ${toPeerID.take(12)}… id=${messageID.take(8)}…")
@@ -65,7 +68,7 @@ class MessageRouter private constructor(
                 val sourceGeohash = com.bitchat.android.nostr.GeohashConversationRegistry.get(toPeerID)
 
                 // If repository knows the source geohash, pass it so NostrTransport derives the correct identity
-                nostr.sendPrivateMessageGeohash(content, recipientHex, messageID, sourceGeohash)
+                nostr.sendPrivateMessageGeohash(content, recipientHex, messageID, sourceGeohash, viewOnce)
                 return
             }
         }
@@ -74,14 +77,14 @@ class MessageRouter private constructor(
         val hasEstablished = mesh.hasEstablishedSession(toPeerID)
         if (hasMesh && hasEstablished) {
             Log.d(TAG, "Routing PM via mesh to ${toPeerID} msg_id=${messageID.take(8)}…")
-            mesh.sendPrivateMessage(content, toPeerID, recipientNickname, messageID)
+            mesh.sendPrivateMessage(content, toPeerID, recipientNickname, messageID, viewOnce)
         } else if (canSendViaNostr(toPeerID)) {
             Log.d(TAG, "Routing PM via Nostr to ${toPeerID.take(32)}… msg_id=${messageID.take(8)}…")
-            nostr.sendPrivateMessage(content, toPeerID, recipientNickname, messageID)
+            nostr.sendPrivateMessage(content, toPeerID, recipientNickname, messageID, viewOnce)
         } else {
             Log.d(TAG, "Queued PM for ${toPeerID} (no mesh, no Nostr mapping) msg_id=${messageID.take(8)}…")
             val q = outbox.getOrPut(toPeerID) { mutableListOf() }
-            q.add(Triple(content, recipientNickname, messageID))
+            q.add(OutboxEntry(content, recipientNickname, messageID, viewOnce))
             Log.d(TAG, "Initiating noise handshake after queueing PM for ${toPeerID.take(8)}…")
             mesh.initiateNoiseHandshake(toPeerID)
         }
@@ -130,23 +133,23 @@ class MessageRouter private constructor(
         Log.d(TAG, "Flushing outbox for ${peerID.take(8)}… count=${queued.size}")
         val iterator = queued.iterator()
         while (iterator.hasNext()) {
-            val (content, nickname, messageID) = iterator.next()
+            val entry = iterator.next()
             var hasMesh = mesh.getPeerInfo(peerID)?.isConnected == true && mesh.hasEstablishedSession(peerID)
             // If this is a noiseHex key, see if there is a connected mesh peer for this identity
             if (!hasMesh && peerID.length == 64 && peerID.matches(Regex("^[0-9a-fA-F]+$"))) {
                 val meshPeer = resolveMeshPeerForNoiseHex(peerID)
                 if (meshPeer != null && mesh.getPeerInfo(meshPeer)?.isConnected == true && mesh.hasEstablishedSession(meshPeer)) {
-                    mesh.sendPrivateMessage(content, meshPeer, nickname, messageID)
+                    mesh.sendPrivateMessage(entry.content, meshPeer, entry.nickname, entry.messageID, entry.viewOnce)
                     iterator.remove()
                     continue
                 }
             }
             val canNostr = canSendViaNostr(peerID)
             if (hasMesh) {
-                mesh.sendPrivateMessage(content, peerID, nickname, messageID)
+                mesh.sendPrivateMessage(entry.content, peerID, entry.nickname, entry.messageID, entry.viewOnce)
                 iterator.remove()
             } else if (canNostr) {
-                nostr.sendPrivateMessage(content, peerID, nickname, messageID)
+                nostr.sendPrivateMessage(entry.content, peerID, entry.nickname, entry.messageID, entry.viewOnce)
                 iterator.remove()
             }
         }

@@ -90,14 +90,13 @@ class CommandProcessor(
                         val messageContent = parts.drop(2).joinToString(" ")
                         val recipientNickname = getPeerNickname(peerID, meshService)
                         privateChatManager.sendPrivateMessage(
-                            messageContent, 
-                            peerID, 
+                            messageContent,
+                            peerID,
                             recipientNickname,
                             state.getNicknameValue(),
                             getMyPeerID(meshService)
-                        ) { content, peerIdParam, recipientNicknameParam, messageId ->
-                            // This would trigger the actual mesh service send
-                            sendPrivateMessageVia(meshService, content, peerIdParam, recipientNicknameParam, messageId)
+                        ) { content, peerIdParam, recipientNicknameParam, messageId, viewOnce ->
+                            sendPrivateMessageVia(meshService, content, peerIdParam, recipientNicknameParam, messageId, viewOnce)
                         }
                     } else {
                         val systemMessage = BitchatMessage(
@@ -305,8 +304,8 @@ class CommandProcessor(
                     getPeerNickname(peerID, meshService),
                     state.getNicknameValue(),
                     myPeerID
-                ) { content, peerIdParam, recipientNicknameParam, messageId ->
-                    sendPrivateMessageVia(meshService, content, peerIdParam, recipientNicknameParam, messageId)
+                ) { content, peerIdParam, recipientNicknameParam, messageId, viewOnce ->
+                    sendPrivateMessageVia(meshService, content, peerIdParam, recipientNicknameParam, messageId, viewOnce)
                 }
             } else if (isInLocationChannel) {
                 // Let the transport layer add the echo; just send it out
@@ -515,7 +514,7 @@ class CommandProcessor(
         return meshService.myPeerID
     }
     
-    private fun sendPrivateMessageVia(meshService: BluetoothMeshService, content: String, peerID: String, recipientNickname: String, messageId: String) {
-        meshService.sendPrivateMessage(content, peerID, recipientNickname, messageId)
+    private fun sendPrivateMessageVia(meshService: BluetoothMeshService, content: String, peerID: String, recipientNickname: String, messageId: String, viewOnce: Boolean = false) {
+        meshService.sendPrivateMessage(content, peerID, recipientNickname, messageId, viewOnce)
     }
 }

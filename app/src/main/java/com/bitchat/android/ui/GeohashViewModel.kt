@@ -65,6 +65,30 @@ class GeohashViewModel(
     private var globalPresenceJob: Job? = null
     private var locationChannelManager: com.bitchat.android.geohash.LocationChannelManager? = null
     private val activeSamplingGeohashes = mutableSetOf<String>()
+    /** Set by ChatViewModel when mesh service is available */
+    var bleProxyClient: com.bitchat.android.mesh.relay.NostrRelayProxyClient? = null
+        set(value) {
+            field = value
+            // Wire event handler to route incoming proxy events to the geohash DM handler
+            value?.eventHandler = handler@{ eventJson ->
+                val event = com.bitchat.android.nostr.NostrEvent.fromJsonString(eventJson) ?: return@handler
+                // Determine which geohash identity this event is addressed to via "p" tag
+                val targetPubkey = event.tags.firstOrNull { it.size >= 2 && it[0] == "p" }?.get(1) ?: return@handler
+                val geohash = try {
+                    (state.selectedLocationChannel.value as? com.bitchat.android.geohash.ChannelID.Location)?.channel?.geohash
+                } catch (_: Exception) { null } ?: return@handler
+                try {
+                    val identity = NostrIdentityBridge.deriveIdentity(geohash, getApplication())
+                    if (identity.publicKeyHex == targetPubkey) {
+                        dmHandler.onGiftWrap(event, geohash, identity)
+                    }
+                } catch (e: Exception) {
+                    Log.w(TAG, "Failed to route proxy event: ${e.message}")
+                }
+            }
+        }
+    // Track active BLE proxy subscriptions so we can unsubscribe on channel switch
+    private var activeProxyPubkeys: List<String>? = null
 
     val geohashPeople: StateFlow<List<GeoPerson>> = state.geohashPeople
     val geohashParticipantCounts: StateFlow<Map<String, Int>> = state.geohashParticipantCounts
@@ -320,6 +344,11 @@ class GeohashViewModel(
         geoTimer?.cancel(); geoTimer = null
         currentGeohashSubId?.let { subscriptionManager.unsubscribe(it); currentGeohashSubId = null }
         currentDmSubId?.let { subscriptionManager.unsubscribe(it); currentDmSubId = null }
+        // Unsubscribe BLE proxy for previous channel
+        activeProxyPubkeys?.let { pks ->
+            if (pks.isNotEmpty()) bleProxyClient?.unsubscribe(pks)
+            activeProxyPubkeys = null
+        }
 
         when (channel) {
             is com.bitchat.android.geohash.ChannelID.Mesh -> {
@@ -365,6 +394,13 @@ class GeohashViewModel(
                     )
                     // Also register alias in global registry for routing convenience
                     GeohashAliasRegistry.put("nostr_${dmIdentity.publicKeyHex.take(16)}", dmIdentity.publicKeyHex)
+
+                    // If no Nostr relays connected, request BLE proxy subscription
+                    if (!NostrRelayManager.shared.isConnected.value) {
+                        val pks = listOf(dmIdentity.publicKeyHex)
+                        bleProxyClient?.subscribe(pubkeys = pks, geohash = geohash)
+                        activeProxyPubkeys = pks
+                    }
                 }
             }
             null -> {

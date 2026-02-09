@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name">bitchat</string>
+    <string name="app_name">bitch at</string>
     <string name="permission_bluetooth_rationale">Bluetooth permission is required for peer-to-peer messaging without internet.</string>
     <string name="permission_location_rationale">Location permission is required to discover nearby devices via Bluetooth.</string>
     <string name="permission_notification_rationale">Notification permission is required to alert you of new messages.</string>
@@ -66,7 +66,8 @@
   <string name="mesh_service_channel_desc">Keeps the Bluetooth mesh running in the background</string>
     <string name="mesh_service_notification_content">Mesh running — %1$d peers</string>
 
-  <!-- Favorites accessibility -->
+  <!-- Favorites -->
+  <string name="favorites_header">Favorites</string>
   <string name="cd_add_favorite">Add to favorites</string>
   <string name="cd_remove_favorite">Remove from favorites</string>
   <string name="cd_add_bookmark">Add bookmark</string>
@@ -406,6 +407,11 @@
   <string name="notification_file_generic">📎</string>
 
   <!-- Voice player accessibility -->
+  <!-- View-once messages -->
+  <string name="view_once_tap_to_view">Tap to view</string>
+  <string name="view_once_expired">View-once message</string>
+  <string name="view_once_toggle_cd">Toggle view-once mode</string>
+
   <string name="cd_play_voice">Play</string>
   <string name="cd_pause_voice">Pause</string>
 

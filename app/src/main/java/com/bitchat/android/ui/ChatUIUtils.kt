@@ -132,8 +132,21 @@ fun formatMessageAsAnnotatedString(
                 builder.append(" ⛨${bits}b")
             }
         }
+        message.hopCount?.let { hops ->
+            builder.append(" ${hops}h")
+        }
         builder.pop()
-        
+
+        // View-once flame indicator
+        if (message.viewOnce) {
+            builder.pushStyle(SpanStyle(
+                color = Color(0xFFFF9500),
+                fontSize = (BASE_FONT_SIZE - 2).sp
+            ))
+            builder.append(" \uD83D\uDD25")
+            builder.pop()
+        }
+
     } else {
         // System message - iOS style
         builder.pushStyle(SpanStyle(
@@ -233,6 +246,9 @@ fun formatMessageHeaderAnnotatedString(
         builder.append("  [${timeFormatter.format(message.timestamp)}]")
         message.powDifficulty?.let { bits ->
             if (bits > 0) builder.append(" ⛨${bits}b")
+        }
+        message.hopCount?.let { hops ->
+            builder.append(" ${hops}h")
         }
         builder.pop()
     } else {

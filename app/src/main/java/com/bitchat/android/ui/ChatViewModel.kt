@@ -148,6 +148,14 @@ class ChatViewModel(
 
 
 
+    // View-once mode toggle for private messages
+    private val _viewOnceMode = MutableStateFlow(false)
+    val viewOnceMode: StateFlow<Boolean> = _viewOnceMode.asStateFlow()
+
+    fun toggleViewOnceMode() {
+        _viewOnceMode.value = !_viewOnceMode.value
+    }
+
     val messages: StateFlow<List<BitchatMessage>> = state.messages
     val connectedPeers: StateFlow<List<String>> = state.connectedPeers
     val nickname: StateFlow<String> = state.nickname
@@ -300,7 +308,11 @@ class ChatViewModel(
         try {
             val nostrTransport = com.bitchat.android.nostr.NostrTransport.getInstance(getApplication())
             nostrTransport.senderPeerID = meshService.myPeerID
+            nostrTransport.bleProxyClient = meshService.nostrRelayProxyClient
         } catch (_: Exception) { }
+
+        // Wire BLE proxy client to GeohashViewModel for subscription proxy
+        geohashViewModel.bleProxyClient = meshService.nostrRelayProxyClient
 
         // Note: Mesh service is now started by MainActivity
 
@@ -411,6 +423,45 @@ class ChatViewModel(
         clearMeshMentionNotifications()
         // Ensure sheet is hidden
         hidePrivateChatSheet()
+        // Reset view-once toggle
+        _viewOnceMode.value = false
+    }
+
+    /**
+     * Reveal a view-once message (tap to view). Schedules auto-expire after 5 seconds.
+     * Updates AppStateStore (the source of truth) so the change propagates to UI via collector.
+     */
+    fun revealViewOnceMessage(messageId: String, peerID: String) {
+        com.bitchat.android.services.AppStateStore.updatePrivateMessage(messageId) { msg ->
+            if (msg.viewOnce && !msg.viewOnceRevealed && msg.content.isNotEmpty()) {
+                msg.copy(viewOnceRevealed = true)
+            } else msg
+        }
+        // Schedule auto-expire after 5 seconds
+        viewModelScope.launch {
+            delay(5000)
+            expireViewOnceMessage(messageId, peerID)
+        }
+    }
+
+    /**
+     * Expire a view-once message - replace content and lock out re-reveal.
+     */
+    private fun expireViewOnceMessage(messageId: String, peerID: String) {
+        com.bitchat.android.services.AppStateStore.updatePrivateMessage(messageId) { msg ->
+            if (msg.viewOnce) msg.copy(content = "", viewOnceRevealed = false) else msg
+        }
+    }
+
+    /**
+     * Expire all view-once messages for a peer (called when leaving chat).
+     */
+    fun expireAllViewOnceForPeer(peerID: String) {
+        com.bitchat.android.services.AppStateStore.updatePrivateMessagesForPeer(peerID) { msg ->
+            if (msg.viewOnce && msg.content.isNotEmpty()) {
+                msg.copy(content = "", viewOnceRevealed = false)
+            } else msg
+        }
     }
 
     // MARK: - Open Latest Unread Private Chat
@@ -520,16 +571,19 @@ class ChatViewModel(
             }
             // Send private message
             val recipientNickname = meshService.getPeerNicknames()[selectedPeer]
+            val isViewOnce = _viewOnceMode.value
+            if (isViewOnce) _viewOnceMode.value = false
             privateChatManager.sendPrivateMessage(
-                content, 
-                selectedPeer, 
+                content,
+                selectedPeer,
                 recipientNickname,
                 state.getNicknameValue(),
-                meshService.myPeerID
-            ) { messageContent, peerID, recipientNicknameParam, messageId ->
+                meshService.myPeerID,
+                isViewOnce
+            ) { messageContent, peerID, recipientNicknameParam, messageId, viewOnce ->
                 // Route via MessageRouter (mesh when connected+established, else Nostr)
                 val router = com.bitchat.android.services.MessageRouter.getInstance(getApplication(), meshService)
-                router.sendPrivate(messageContent, peerID, recipientNicknameParam, messageId)
+                router.sendPrivate(messageContent, peerID, recipientNicknameParam, messageId, viewOnce)
             }
         } else {
             // Check if we're in a location channel
@@ -728,6 +782,27 @@ class ChatViewModel(
                 verificationHandler.sendPendingVerificationIfNeeded(peerID)
             }
         }
+
+        // Sync DataManager favorites → FavoritesPersistenceService for connected peers
+        // This ensures offline favorites show up even if they were added before the persistence service existed
+        try {
+            val dmFavorites = dataManager.favoritePeers
+            if (dmFavorites.isNotEmpty()) {
+                fingerprints.forEach { (peerID, fingerprint) ->
+                    if (dmFavorites.contains(fingerprint)) {
+                        val info = try { meshService.getPeerInfo(peerID) } catch (_: Exception) { null }
+                        val noiseKey = info?.noisePublicKey
+                        if (noiseKey != null) {
+                            val svc = com.bitchat.android.favorites.FavoritesPersistenceService.shared
+                            val existing = svc.getFavoriteStatus(noiseKey)
+                            if (existing == null || !existing.isFavorite) {
+                                svc.updateFavoriteStatus(noiseKey, info.nickname, true)
+                            }
+                        }
+                    }
+                }
+            }
+        } catch (_: Exception) { }
     }
 
     // MARK: - QR Verification

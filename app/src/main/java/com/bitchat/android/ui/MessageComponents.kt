@@ -65,7 +65,8 @@ fun MessagesList(
     onNicknameClick: ((String) -> Unit)? = null,
     onMessageLongPress: ((BitchatMessage) -> Unit)? = null,
     onCancelTransfer: ((BitchatMessage) -> Unit)? = null,
-    onImageClick: ((String, List<String>, Int) -> Unit)? = null
+    onImageClick: ((String, List<String>, Int) -> Unit)? = null,
+    onViewOnceReveal: ((BitchatMessage) -> Unit)? = null
 ) {
     val listState = rememberLazyListState()
     
@@ -126,7 +127,8 @@ fun MessagesList(
                     onNicknameClick = onNicknameClick,
                     onMessageLongPress = onMessageLongPress,
                     onCancelTransfer = onCancelTransfer,
-                    onImageClick = onImageClick
+                    onImageClick = onImageClick,
+                    onViewOnceReveal = onViewOnceReveal
                 )
         }
     }
@@ -142,11 +144,59 @@ fun MessageItem(
     onNicknameClick: ((String) -> Unit)? = null,
     onMessageLongPress: ((BitchatMessage) -> Unit)? = null,
     onCancelTransfer: ((BitchatMessage) -> Unit)? = null,
-    onImageClick: ((String, List<String>, Int) -> Unit)? = null
+    onImageClick: ((String, List<String>, Int) -> Unit)? = null,
+    onViewOnceReveal: ((BitchatMessage) -> Unit)? = null
 ) {
     val colorScheme = MaterialTheme.colorScheme
     val timeFormatter = remember { SimpleDateFormat("HH:mm:ss", Locale.getDefault()) }
-    
+
+    // Determine if this message was sent by self
+    val isSelf = message.senderPeerID == meshService.myPeerID ||
+                 message.sender == currentUserNickname ||
+                 message.sender.startsWith("$currentUserNickname#")
+
+    // View-once message rendering
+    if (message.viewOnce && !isSelf) {
+        // Recipient view-once: show "tap to view" or expired state
+        if (message.content.isEmpty()) {
+            // Expired
+            Text(
+                text = "\uD83D\uDD25 View-once message",
+                fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
+                fontStyle = androidx.compose.ui.text.font.FontStyle.Italic,
+                color = Color.Gray.copy(alpha = 0.6f),
+                fontSize = (com.bitchat.android.ui.theme.BASE_FONT_SIZE - 2).sp
+            )
+            return
+        } else if (!message.viewOnceRevealed) {
+            // Unrevealed - show header + "Tap to view"
+            val headerText = formatMessageHeaderAnnotatedString(
+                message = message,
+                currentUserNickname = currentUserNickname,
+                meshService = meshService,
+                colorScheme = colorScheme,
+                timeFormatter = timeFormatter
+            )
+            Column {
+                Text(
+                    text = headerText,
+                    fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
+                    color = colorScheme.onSurface
+                )
+                Text(
+                    text = "\uD83D\uDD25 Tap to view",
+                    fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
+                    fontStyle = androidx.compose.ui.text.font.FontStyle.Italic,
+                    color = Color(0xFFFF9500),
+                    fontSize = (com.bitchat.android.ui.theme.BASE_FONT_SIZE).sp,
+                    modifier = Modifier.clickable { onViewOnceReveal?.invoke(message) }
+                )
+            }
+            return
+        }
+        // If revealed, fall through to normal rendering (with flame indicator added in ChatUIUtils)
+    }
+
     Column(
         modifier = Modifier.fillMaxWidth(),
         verticalArrangement = Arrangement.spacedBy(0.dp)

@@ -76,6 +76,17 @@ class NostrDirectMessageHandler(
                 if (packet.type != com.bitchat.android.protocol.MessageType.NOISE_ENCRYPTED.value) return@launch
 
                 val noisePayload = NoisePayload.decode(packet.payload) ?: return@launch
+
+                // Nostr-to-BLE bridge: relay content messages into BLE mesh for nearby BLE-only peers
+                if (noisePayload.type == NoisePayloadType.PRIVATE_MESSAGE ||
+                    noisePayload.type == NoisePayloadType.FILE_TRANSFER) {
+                    try {
+                        meshDelegateHandler.getMeshServiceOrNull()?.broadcastNostrPacketToMesh(packet)
+                    } catch (e: Exception) {
+                        Log.w(TAG, "Nostr-to-BLE bridge failed: ${e.message}")
+                    }
+                }
+
                 val messageTimestamp = Date(giftWrap.createdAt * 1000L)
                 val convKey = "nostr_${senderPubkey.take(16)}"
                 repo.putNostrKeyMapping(convKey, senderPubkey)
@@ -130,7 +141,8 @@ class NostrDirectMessageHandler(
                     isPrivate = true,
                     recipientNickname = state.getNicknameValue(),
                     senderPeerID = convKey,
-                    deliveryStatus = DeliveryStatus.Delivered(to = state.getNicknameValue() ?: "Unknown", at = Date())
+                    deliveryStatus = DeliveryStatus.Delivered(to = state.getNicknameValue() ?: "Unknown", at = Date()),
+                    viewOnce = pm.viewOnce
                 )
 
                 val isViewing = state.getSelectedPrivateChatPeerValue() == convKey

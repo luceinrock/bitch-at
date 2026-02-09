@@ -364,7 +364,9 @@ fun ChatInputSection(
     currentChannel: String?,
     nickname: String,
     colorScheme: ColorScheme,
-    showMediaButtons: Boolean
+    showMediaButtons: Boolean,
+    viewOnceEnabled: Boolean = false,
+    onToggleViewOnce: () -> Unit = {}
 ) {
     Surface(
         modifier = Modifier.fillMaxWidth(),
@@ -401,6 +403,8 @@ fun ChatInputSection(
                 currentChannel = currentChannel,
                 nickname = nickname,
                 showMediaButtons = showMediaButtons,
+                viewOnceEnabled = viewOnceEnabled,
+                onToggleViewOnce = onToggleViewOnce,
                 modifier = Modifier.fillMaxWidth()
             )
         }

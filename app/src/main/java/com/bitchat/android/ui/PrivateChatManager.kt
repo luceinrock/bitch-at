@@ -87,7 +87,8 @@ class PrivateChatManager(
         recipientNickname: String?,
         senderNickname: String?,
         myPeerID: String,
-        onSendMessage: (String, String, String, String) -> Unit
+        isViewOnce: Boolean = false,
+        onSendMessage: (String, String, String, String, Boolean) -> Unit
     ): Boolean {
         if (isPeerBlocked(peerID)) {
             val systemMessage = BitchatMessage(
@@ -108,11 +109,12 @@ class PrivateChatManager(
             isPrivate = true,
             recipientNickname = recipientNickname,
             senderPeerID = myPeerID,
-            deliveryStatus = DeliveryStatus.Sending
+            deliveryStatus = DeliveryStatus.Sending,
+            viewOnce = isViewOnce
         )
 
         messageManager.addPrivateMessage(peerID, message)
-        onSendMessage(content, peerID, recipientNickname ?: "", message.id)
+        onSendMessage(content, peerID, recipientNickname ?: "", message.id, isViewOnce)
 
         return true
     }

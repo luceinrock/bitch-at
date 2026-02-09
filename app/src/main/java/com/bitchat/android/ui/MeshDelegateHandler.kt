@@ -311,6 +311,13 @@ class MeshDelegateHandler(
     // registerPeerPublicKey REMOVED - fingerprints now handled centrally in PeerManager
 
     /**
+     * Safe accessor for the mesh service; returns null if not yet bound.
+     */
+    fun getMeshServiceOrNull(): BluetoothMeshService? {
+        return try { getMeshService() } catch (e: Exception) { null }
+    }
+
+    /**
      * Expose mesh peer info for components that need to resolve identities (e.g., Nostr mapping)
      */
     fun getPeerInfo(peerID: String): com.bitchat.android.mesh.PeerInfo? {

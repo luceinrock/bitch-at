@@ -69,7 +69,10 @@ data class BitchatMessage(
     val encryptedContent: ByteArray? = null,
     val isEncrypted: Boolean = false,
     val deliveryStatus: DeliveryStatus? = null,
-    val powDifficulty: Int? = null
+    val powDifficulty: Int? = null,
+    val hopCount: Int? = null,
+    val viewOnce: Boolean = false,
+    val viewOnceRevealed: Boolean = false
 ) : Parcelable {
 
     /**
@@ -331,6 +334,9 @@ data class BitchatMessage(
         } else if (other.encryptedContent != null) return false
         if (isEncrypted != other.isEncrypted) return false
         if (deliveryStatus != other.deliveryStatus) return false
+        if (hopCount != other.hopCount) return false
+        if (viewOnce != other.viewOnce) return false
+        if (viewOnceRevealed != other.viewOnceRevealed) return false
 
         return true
     }
@@ -351,6 +357,9 @@ data class BitchatMessage(
         result = 31 * result + (encryptedContent?.contentHashCode() ?: 0)
         result = 31 * result + isEncrypted.hashCode()
         result = 31 * result + (deliveryStatus?.hashCode() ?: 0)
+        result = 31 * result + (hopCount?.hashCode() ?: 0)
+        result = 31 * result + viewOnce.hashCode()
+        result = 31 * result + viewOnceRevealed.hashCode()
         return result
     }
 }

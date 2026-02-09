@@ -40,6 +40,7 @@ class BluetoothMeshService(private val context: Context) {
     companion object {
         private const val TAG = "BluetoothMeshService"
         private val MAX_TTL: UByte = com.bitchat.android.util.AppConstants.MESSAGE_TTL_HOPS
+        private val NOSTR_BRIDGE_TTL: UByte = 3u  // Reduced TTL for Nostr-bridged packets
     }
     
     // Core components - each handling specific responsibilities
@@ -62,6 +63,27 @@ class BluetoothMeshService(private val context: Context) {
         com.bitchat.android.util.NotificationIntervalManager()
     )
     
+    // Nostr-to-BLE bridge dedup to prevent echo loops
+    private val nostrBridgeDedupSet = Collections.synchronizedSet(mutableSetOf<String>())
+    // BLE-to-Nostr bridge dedup to prevent re-bridging already-bridged packets
+    private val bleBridgeDedupSet = Collections.synchronizedSet(mutableSetOf<String>())
+
+    // Nostr relay proxy components (BLE ↔ Nostr relay tunneling)
+    val nostrRelayProxyClient = com.bitchat.android.mesh.relay.NostrRelayProxyClient(
+        myPeerID = myPeerID,
+        sendPacket = { packet ->
+            val signed = signPacketBeforeBroadcast(packet)
+            connectionManager.broadcastPacket(RoutedPacket(signed))
+        }
+    )
+    private val nostrRelayProxyBridge = com.bitchat.android.mesh.relay.NostrRelayProxyBridge(
+        myPeerID = myPeerID,
+        sendPacket = { packet ->
+            val signed = signPacketBeforeBroadcast(packet)
+            connectionManager.broadcastPacket(RoutedPacket(signed))
+        }
+    )
+
     // Service state management
     private var isActive = false
     
@@ -468,6 +490,9 @@ class BluetoothMeshService(private val context: Context) {
             }
             
             override fun handleNoiseEncrypted(routed: RoutedPacket) {
+                // Register in bridge dedup to prevent Nostr echo
+                val pkt = routed.packet
+                nostrBridgeDedupSet.add("nostr_bridge_${pkt.timestamp}_${pkt.payload.contentHashCode()}")
                 serviceScope.launch { messageHandler.handleNoiseEncrypted(routed) }
             }
             
@@ -536,20 +561,46 @@ class BluetoothMeshService(private val context: Context) {
             override fun sendCachedMessages(peerID: String) {
                 storeForwardManager.sendCachedMessages(peerID)
             }
-            
+
             override fun relayPacket(routed: RoutedPacket) {
                 connectionManager.broadcastPacket(routed)
+                bridgeBlePacketToNostr(routed.packet)
             }
 
             override fun sendToPeer(peerID: String, routed: RoutedPacket): Boolean {
                 return connectionManager.sendToPeer(peerID, routed)
             }
-            
+
             override fun handleRequestSync(routed: RoutedPacket) {
                 // Decode request and respond with missing packets
                 val fromPeer = routed.peerID ?: return
                 val req = RequestSyncPacket.decode(routed.packet.payload) ?: return
                 gossipSyncManager.handleRequestSync(fromPeer, req)
+            }
+
+            override fun handleNostrRelay(routed: RoutedPacket) {
+                serviceScope.launch {
+                    // Determine sub-type to route correctly
+                    val payload = routed.packet.payload
+                    if (payload.isEmpty()) return@launch
+                    val subType = com.bitchat.android.mesh.relay.NostrRelaySubType.fromValue(payload[0].toUByte())
+
+                    when (subType) {
+                        com.bitchat.android.mesh.relay.NostrRelaySubType.PUBLISH,
+                        com.bitchat.android.mesh.relay.NostrRelaySubType.SUBSCRIBE,
+                        com.bitchat.android.mesh.relay.NostrRelaySubType.UNSUBSCRIBE -> {
+                            // If this device has Nostr relay connectivity, act as bridge
+                            if (com.bitchat.android.nostr.NostrRelayManager.shared.isConnected.value) {
+                                nostrRelayProxyBridge.handlePacket(routed)
+                            }
+                        }
+                        com.bitchat.android.mesh.relay.NostrRelaySubType.EVENT -> {
+                            // Incoming event from a bridge — deliver to local proxy client
+                            nostrRelayProxyClient.handleIncomingPacket(routed)
+                        }
+                        null -> Log.w(TAG, "Unknown NOSTR_RELAY sub-type: ${payload[0]}")
+                    }
+                }
             }
         }
         
@@ -604,6 +655,9 @@ class BluetoothMeshService(private val context: Context) {
                         com.bitchat.android.ui.debug.DebugSettingsManager.getInstance()
                             .logPeerDisconnection(peer, nick, addr)
                     } catch (_: Exception) { }
+
+                    // Clean up any Nostr relay proxy subscriptions for this peer
+                    try { nostrRelayProxyBridge.onPeerDisconnected(peer) } catch (_: Exception) { }
                 }
             }
             
@@ -840,7 +894,7 @@ class BluetoothMeshService(private val context: Context) {
      * Send private message - SIMPLIFIED iOS-compatible version 
      * Uses NoisePayloadType system exactly like iOS SimplifiedBluetoothService
      */
-    fun sendPrivateMessage(content: String, recipientPeerID: String, recipientNickname: String, messageID: String? = null) {
+    fun sendPrivateMessage(content: String, recipientPeerID: String, recipientNickname: String, messageID: String? = null, viewOnce: Boolean = false) {
         if (content.isEmpty() || recipientPeerID.isEmpty()) return
         if (recipientNickname.isEmpty()) return
         
@@ -855,7 +909,8 @@ class BluetoothMeshService(private val context: Context) {
                     // Create TLV-encoded private message exactly like iOS
                     val privateMessage = com.bitchat.android.model.PrivateMessagePacket(
                         messageID = finalMessageID,
-                        content = content
+                        content = content,
+                        viewOnce = viewOnce
                     )
                     
                     val tlvData = privateMessage.encode()
@@ -1376,6 +1431,89 @@ class BluetoothMeshService(private val context: Context) {
         }
     }
     
+    // MARK: - Nostr-to-BLE Bridge
+
+    /**
+     * Relay a Nostr-received BitchatPacket into the BLE mesh so nearby BLE-only peers can receive it.
+     * Returns true if the packet was broadcast, false if skipped (inactive, duplicate, etc.).
+     */
+    fun broadcastNostrPacketToMesh(packet: BitchatPacket): Boolean {
+        if (!isActive) return false
+
+        val dedupKey = "nostr_bridge_${packet.timestamp}_${packet.payload.contentHashCode()}"
+        if (!nostrBridgeDedupSet.add(dedupKey)) {
+            Log.d(TAG, "Nostr bridge: skipping duplicate packet (key=$dedupKey)")
+            return false
+        }
+
+        // Override TTL — packet already traversed the internet, limit mesh flooding
+        val bridgedPacket = packet.copy(ttl = NOSTR_BRIDGE_TTL)
+        connectionManager.broadcastPacket(RoutedPacket(bridgedPacket))
+        Log.d(TAG, "Nostr bridge: relayed packet into BLE mesh (type=${packet.type}, TTL=$NOSTR_BRIDGE_TTL)")
+        return true
+    }
+
+    // MARK: - BLE-to-Nostr Bridge
+
+    /**
+     * Bridge a relayed BLE packet to Nostr so that WiFi-connected peers on the internet can receive it.
+     * Mirrors broadcastNostrPacketToMesh (Nostr→BLE) in the opposite direction.
+     */
+    private fun bridgeBlePacketToNostr(packet: BitchatPacket) {
+        if (!isActive) return
+        if (packet.type != MessageType.NOISE_ENCRYPTED.value) return
+        val recipientID = packet.recipientID ?: return
+
+        val dedupKey = "ble_bridge_${packet.timestamp}_${packet.payload.contentHashCode()}"
+
+        // If this packet came from Nostr, don't echo it back
+        if (nostrBridgeDedupSet.contains(dedupKey.replace("ble_bridge_", "nostr_bridge_"))) return
+        // Also check exact nostr key format used when ingesting from Nostr
+        if (nostrBridgeDedupSet.contains("nostr_bridge_${packet.timestamp}_${packet.payload.contentHashCode()}")) return
+
+        // Don't bridge the same packet twice
+        if (!bleBridgeDedupSet.add(dedupKey)) return
+
+        serviceScope.launch {
+            try {
+                // Convert recipientID bytes to 16-hex peer ID string
+                val recipientHex = recipientID.joinToString("") { "%02x".format(it) }
+
+                // Look up the Nostr npub for this peer
+                val npub = com.bitchat.android.favorites.FavoritesPersistenceService.shared
+                    .findNostrPubkeyForPeerID(recipientHex) ?: return@launch
+
+                // Decode npub to hex pubkey
+                val (hrp, pubkeyBytes) = com.bitchat.android.nostr.Bech32.decode(npub)
+                if (hrp != "npub") return@launch
+                val recipientPubkeyHex = pubkeyBytes.joinToString("") { "%02x".format(it) }
+
+                // Encode the raw BitchatPacket as bitchat1: payload
+                val packetData = packet.toBinaryData() ?: return@launch
+                val content = "bitchat1:" + com.bitchat.android.nostr.NostrEmbeddedBitChat.base64URLEncode(packetData)
+
+                // Get our Nostr identity for gift-wrapping
+                val senderIdentity = com.bitchat.android.nostr.NostrIdentityBridge.getCurrentNostrIdentity(context) ?: return@launch
+
+                // Create gift-wrapped DM(s)
+                val giftWraps = com.bitchat.android.nostr.NostrProtocol.createPrivateMessage(
+                    content = content,
+                    recipientPubkey = recipientPubkeyHex,
+                    senderIdentity = senderIdentity
+                )
+
+                // Publish each event to Nostr relays
+                giftWraps.forEach { event ->
+                    com.bitchat.android.nostr.NostrRelayManager.getInstance(context).sendEvent(event)
+                }
+
+                Log.d(TAG, "BLE→Nostr bridge: relayed packet to $recipientHex via Nostr (${giftWraps.size} events)")
+            } catch (e: Exception) {
+                Log.e(TAG, "BLE→Nostr bridge failed: ${e.message}")
+            }
+        }
+    }
+
     // MARK: - Panic Mode Support
     
     /**
@@ -1387,6 +1525,12 @@ class BluetoothMeshService(private val context: Context) {
             // Stop services to cease broadcasting old ID immediately
             stopServices()
             
+            // Clear bridge dedup sets
+            nostrBridgeDedupSet.clear()
+            bleBridgeDedupSet.clear()
+            // Clear Nostr relay proxy state
+            nostrRelayProxyClient.clearState()
+            nostrRelayProxyBridge.shutdown()
             // Clear all managers
             fragmentManager.clearAllFragments()
             storeForwardManager.clearAllCache()
